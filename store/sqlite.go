@@ -88,3 +88,26 @@ func (s *SQLiteStore) Close() error {
 	}
 	return nil
 }
+
+// All 返回 SQLite 中已抓取的全部页面
+func (s *SQLiteStore) All() ([]*parser.Page, error) {
+	query := `SELECT url, title, text FROM pages;`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("查询全部页面失败: %w", err)
+	}
+	defer rows.Close()
+
+	var pages []*parser.Page
+	for rows.Next() {
+		var p parser.Page
+		if err := rows.Scan(&p.URL, &p.Title, &p.Text); err != nil {
+			return nil, fmt.Errorf("扫描页面记录失败: %w", err)
+		}
+		pages = append(pages, &p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历结果集错误: %w", err)
+	}
+	return pages, nil
+}

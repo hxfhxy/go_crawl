@@ -1,8 +1,3 @@
-// gocrawl 入口：解析命令行参数，组装各模块，处理 Ctrl+C 优雅退出。
-//
-// 运行示例：
-//
-//	go run . -keyword "Go后端" -max 20
 package main
 
 import (
@@ -17,14 +12,16 @@ import (
 
 	"gocrawl/config"
 	"gocrawl/scheduler"
+	"gocrawl/stats" // 引入 stats 包
+	"gocrawl/store"
 )
 
 func main() {
 	log.SetFlags(log.Ltime)
 
 	keyword := flag.String("keyword", "Go后端", "搜索关键词")
-	maxPages := flag.Int("max", 20, "最多抓取的页面数")
-	storeKind := flag.String("store", "sqlite", "存储类型: sqlite 或 memory")
+	maxPages := flag.Int("max", 20, "最大抓取页面数")
+	storeKind := flag.String("store", "sqlite", "存储引擎: sqlite 或 memory")
 	flag.Parse()
 
 	cfg := config.Default()
@@ -34,22 +31,34 @@ func main() {
 		"https://www.nowcoder.com/search?query=" + url.QueryEscape(*keyword) + "&type=all",
 	}
 
-	// signal.NotifyContext 把 Ctrl+C / SIGTERM 转换成 ctx 取消。
-	// 退出信号顺着 ctx 一路传给调度器和每个 worker，
-	// worker 处理完手头任务后自然退出，Run 返回部分统计。
-	// 任何一步都不应该 os.Exit 硬退——那会让内存里的数据全部丢失。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("开始爬取，关键词: %q, 页数上限: %d（Ctrl+C 可随时退出）", *keyword, cfg.MaxPages)
+	log.Printf("爬虫启动: 关键词 %q, 目标抓取数 %d (按 Ctrl+C 可中断)", *keyword, cfg.MaxPages)
 
 	s := scheduler.New(cfg)
-	stats, err := s.Run(ctx)
+	// 将变量重命名为 crawlStats，防止遮蔽 stats 包名
+	crawlStats, err := s.Run(ctx)
 	if err != nil {
-		log.Fatalf("爬虫异常退出: %v", err)
+		log.Fatalf("运行失败: %v", err)
 	}
 
-	fmt.Println("\n════════ 运行结果 ════════")
-	fmt.Printf("成功: %d  失败: %d  跳过(重复): %d\n", stats.OKCount, stats.FailCount, stats.SkipCount)
-	fmt.Printf("数据已保存到 %s（存储类型: %s），再次运行相同关键词会走增量爬取。\n", cfg.DBPath, cfg.StoreKind)
+	fmt.Println("\n抓取完成:")
+	fmt.Printf("成功: %d  失败: %d  跳过(去重): %d\n", crawlStats.OKCount, crawlStats.FailCount, crawlStats.SkipCount)
+	fmt.Printf("数据保存在: %s (引擎: %s)\n", cfg.DBPath, cfg.StoreKind)
+
+	// 打开存储并执行词频分析与展示
+	st, err := store.New(cfg.StoreKind, cfg.DBPath)
+	if err != nil {
+		log.Printf("打开存储读取统计失败: %v", err)
+		return
+	}
+	defer st.Close()
+
+	freqs, err := stats.Analyze(st)
+	if err != nil {
+		log.Printf("词频统计失败: %v", err)
+		return
+	}
+	stats.Print(freqs)
 }
